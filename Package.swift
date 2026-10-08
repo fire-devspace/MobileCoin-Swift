@@ -14,6 +14,11 @@ let package = Package(
             targets: ["MobileCoin"]),
     ],
     dependencies: [
+        // Correct Ristretto base multiplication for watch-only account setup.
+        .package(
+            url: "https://github.com/jedisct1/swift-sodium.git",
+            revision: "cfd195c76882aa9b997560ca7cb95d72fbf5db00"
+        ),
         // Here we define our package's external dependencies
         // and from where they can be fetched:
         // Kyoto fork: vendored xcframework with mc_transaction_builder_add_presigned_partial_fill_input
@@ -33,7 +38,7 @@ let package = Package(
     targets: [
         .target(
             name: "MobileCoin",
-            dependencies: [.product(name: "SwiftProtobuf", package: "swift-protobuf"), .product(name: "LibMobileCoinCore", package: "libmobilecoin")],
+            dependencies: [.product(name: "Clibsodium", package: "swift-sodium"), .product(name: "SwiftProtobuf", package: "swift-protobuf"), .product(name: "LibMobileCoinCore", package: "libmobilecoin")],
             path: "Sources"
          ),
         .testTarget(

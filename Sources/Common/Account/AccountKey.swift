@@ -106,23 +106,26 @@ public struct AccountKey {
     var changeSubaddressSpendPrivateKey: RistrettoPrivate { changeSubaddressPrivateKeys.spendKey }
 
     private var indexedPrivateKeys: [UInt64: SubaddressPrivateKeys] {
-        [
-            subaddressIndex: subaddressPrivateKeys,
-            changeSubaddressIndex: changeSubaddressPrivateKeys,
-            McConstants.EXTENSION_CHANGE_SUBADDRESS_INDEX: extensionChangeSubaddressPrivateKeys,
-        ]
+        Dictionary([
+            (subaddressIndex, subaddressPrivateKeys),
+            (changeSubaddressIndex, changeSubaddressPrivateKeys),
+            (McConstants.EXTENSION_CHANGE_SUBADDRESS_INDEX, extensionChangeSubaddressPrivateKeys),
+        ], uniquingKeysWith: { first, _ in first })
     }
 
     func subaddressSpendPrivateKey(index: UInt64) -> RistrettoPrivate? {
-        indexedPrivateKeys[index]?.spendKey
+        privateKeys(for: index)?.spendKey
     }
 
     func subaddressViewPrivateKey(index: UInt64) -> RistrettoPrivate? {
-        indexedPrivateKeys[index]?.viewKey
+        privateKeys(for: index)?.viewKey
     }
 
     func privateKeys(for index: UInt64) -> SubaddressPrivateKeys? {
-        indexedPrivateKeys[index]
+        if let keys = indexedPrivateKeys[index] { return keys }
+        guard index < UInt64(UInt32.max) else { return nil }
+        return Self.makeSubaddressPrivateKeys(viewPrivateKey: viewPrivateKey,
+            spendPrivateKey: spendPrivateKey, subaddressIndex: index)
     }
 }
 

@@ -58,7 +58,8 @@ extension TxOutProtocol {
     /// - Returns: `nil` when a valid `KeyImage` cannot be constructed, either because `accountKey`
     ///     does not own `TxOut` or because `TxOut` values are incongruent.
     func keyImage(accountKey: AccountKey) -> IndexedKeyImage? {
-        McConstants.POSSIBLE_SUBADDRESSES.compactMap {
+        [accountKey.changeSubaddressIndex, accountKey.subaddressIndex,
+         McConstants.EXTENSION_CHANGE_SUBADDRESS_INDEX].compactMap {
             constructKeyImage(index: $0, accountKey: accountKey)
         }.first
     }

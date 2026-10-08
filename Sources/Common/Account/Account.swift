@@ -126,13 +126,15 @@ final class Account {
         let knowableBlockCount = self.knowableBlockCount
         let txOuts = allTxOutTrackers
             .filter { $0.receivedAndUnspent(asOfBlockCount: knowableBlockCount) }
+            .filter { !$0.isSpent }
             .filter { $0.knownTxOut.tokenId == tokenId }
             .map { $0.knownTxOut }
         return (txOuts: txOuts, blockCount: knowableBlockCount)
     }
 
     func addTxOuts(_ txOuts: [KnownTxOut]) {
-        allTxOutTrackers.append(contentsOf: txOuts.map { TxOutTracker($0) })
+        var known = Set(allTxOutTrackers.map { $0.knownTxOut.publicKey })
+        allTxOutTrackers.append(contentsOf: txOuts.filter { known.insert($0.publicKey).inserted }.map { TxOutTracker($0) })
     }
 
     func addViewKeyScanResults(scannedBlockRanges: [Range<UInt64>], foundTxOuts: [KnownTxOut]) {
