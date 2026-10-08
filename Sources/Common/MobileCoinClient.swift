@@ -895,3 +895,105 @@ extension Account {
         }
     }
 }
+
+// MARK: - Reading pointers by block height (connection keys v1, section 8)
+
+/// A store's pointer that also names the block its output landed in
+/// (`block_index` in the pool-outputs contract).
+public struct FireAccountOutputBlockPointer {
+    public let pointer: FireAccountOutputPointer
+    public let blockIndex: UInt64
+    public init(publicKey: Data, subaddressIndex: UInt64, blockIndex: UInt64) {
+        self.pointer = FireAccountOutputPointer(publicKey: publicKey, subaddressIndex: subaddressIndex)
+        self.blockIndex = blockIndex
+    }
+}
+
+/// What reading pointers by block concluded. Unlike `FireAccountOutputReading`,
+/// an output that decrypts under somebody else's keys is not an anomaly here:
+/// a client may offer one pointer to each account a connection has used, and
+/// ownership decides which one it belongs to.
+public struct FireAccountOutputBlockReading: Sendable {
+    /// Verified with this account's own keys, spent status read.
+    public let owned: [OwnedTxOut]
+    /// Not in the block the pointer named. Never guessed at.
+    public let absent: [Data]
+    /// In the block, and not this account's at the named subaddress.
+    public let notOwned: [Data]
+}
+
+extension MobileCoinClient {
+    /// Resolve pointers by reading their blocks whole through Fog's block
+    /// service, a request that names only heights, and finding each output on
+    /// the device.
+    ///
+    /// The private alternative to `fireReadAccountOutputs`, which asks Fog's
+    /// untrusted output lookup about specific output public keys: that lookup is
+    /// answered outside the enclave, so its operator learns which outputs this
+    /// wallet cares about and from where. A block read tells it a height, and
+    /// every client reading that height sends the same bytes.
+    ///
+    /// Verification and spent status are exactly `fireReadAccountOutputs`'s: an
+    /// output counts only once it decrypts under this account's key for the
+    /// named subaddress, and only a fully checked batch is cached for spending.
+    public func fireReadAccountOutputsAtBlocks(
+        _ pointers: [FireAccountOutputBlockPointer],
+        completion: @escaping (Result<FireAccountOutputBlockReading, ConnectionError>) -> Void
+    ) {
+        guard !pointers.isEmpty else {
+            completion(.success(FireAccountOutputBlockReading(owned: [], absent: [], notOwned: [])))
+            return
+        }
+        let blocks = Array(Set(pointers.map(\.blockIndex))).sorted()
+        guard pointers.count <= 100, blocks.count <= 100,
+              pointers.allSatisfy({ $0.pointer.subaddressIndex < UInt64(UInt32.max)
+                  && RistrettoPublic($0.pointer.publicKey) != nil
+                  && $0.blockIndex < UInt64.max }),
+              Set(pointers.map(\.pointer.publicKey)).count == pointers.count else {
+            completion(.failure(.invalidServerResponse("Invalid account output pointers")))
+            return
+        }
+        let account = accountLock.readSync { $0.accountKey }
+        FogViewKeyScanner(accountKey: account, fogBlockService: serviceProvider.fogBlockService)
+            .fetchBlocksTxOuts(ranges: blocks.map { $0..<($0 + 1) }) { fetched in
+                switch fetched {
+                case .failure(let error):
+                    completion(.failure(error))
+                case .success(let outputs):
+                    var byKey: [Data: LedgerTxOut] = [:]
+                    for output in outputs where byKey[output.publicKey.data] == nil {
+                        byKey[output.publicKey.data] = output
+                    }
+                    var owned: [KnownTxOut] = []
+                    var absent: [Data] = []
+                    var notOwned: [Data] = []
+                    for entry in pointers {
+                        let named = entry.pointer
+                        guard let output = byKey[named.publicKey],
+                              output.block.index == entry.blockIndex else {
+                            absent.append(named.publicKey)
+                            continue
+                        }
+                        let key = account.fireReceivingAccount(subaddressIndex: named.subaddressIndex)
+                        guard let decrypted = output.decrypt(accountKey: key),
+                              decrypted.subaddressIndex == named.subaddressIndex,
+                              decrypted.commitment == output.commitment else {
+                            notOwned.append(named.publicKey)
+                            continue
+                        }
+                        owned.append(decrypted)
+                    }
+                    guard !owned.isEmpty else {
+                        completion(.success(FireAccountOutputBlockReading(owned: [], absent: absent,
+                                                                           notOwned: notOwned)))
+                        return
+                    }
+                    self.fireCheckAccountOutputs(owned, absent: absent) { checked in
+                        completion(checked.map {
+                            FireAccountOutputBlockReading(owned: $0.owned, absent: $0.absent, notOwned: notOwned)
+                        })
+                    }
+                }
+            }
+    }
+}
