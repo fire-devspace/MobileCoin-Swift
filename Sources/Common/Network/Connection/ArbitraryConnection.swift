@@ -5,7 +5,9 @@
 import Foundation
 
 class ArbitraryConnection<GrpcService, HttpService> {
-    private let inner: SerialDispatchLock<Inner>
+    // fire: a read-write lock for the same reason as `Connection`'s: an unlocked read of the
+    // wrapper raced the swap that released the old service.
+    private let inner: ReadWriteDispatchLock<Inner>
 
     private let connectionOptionWrapperFactory: (TransportProtocol.Option)
         -> ConnectionOptionWrapper<GrpcService, HttpService>
@@ -19,16 +21,16 @@ class ArbitraryConnection<GrpcService, HttpService> {
         self.connectionOptionWrapperFactory = connectionOptionWrapperFactory
         let connectionOptionWrapper = connectionOptionWrapperFactory(transportProtocolOption)
         let inner = Inner(connectionOptionWrapper: connectionOptionWrapper)
-        self.inner = .init(inner, targetQueue: targetQueue)
+        self.inner = .init(inner)
     }
 
     func setTransportProtocolOption(_ transportProtocolOption: TransportProtocol.Option) {
         let connectionOptionWrapper = connectionOptionWrapperFactory(transportProtocolOption)
-        inner.accessAsync { $0.connectionOptionWrapper = connectionOptionWrapper }
+        inner.writeSync { $0.connectionOptionWrapper = connectionOptionWrapper }
     }
 
     var connectionOptionWrapper: ConnectionOptionWrapper<GrpcService, HttpService> {
-        inner.accessWithoutLocking.connectionOptionWrapper
+        inner.readSync { $0.connectionOptionWrapper }
     }
 }
 

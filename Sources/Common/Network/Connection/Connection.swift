@@ -5,8 +5,11 @@
 import Foundation
 
 class Connection<GrpcService: ConnectionProtocol, HttpService: ConnectionProtocol> {
-    private let inner: SerialDispatchLock<Inner>
-    private var transportProtocolOption: TransportProtocol.Option
+    // fire: a read-write lock rather than `SerialDispatchLock`. Every call reads the current
+    // wrapper, and an error rotates it, so a read without the lock raced the swap that released
+    // the old service: the reader retained an object already being deallocated, which crashed in
+    // `FogViewGrpcConnection`'s deinit or later inside its `SerialCallbackLock`.
+    private let inner: ReadWriteDispatchLock<Inner>
 
     private let connectionOptionWrapperFactory: (TransportProtocol.Option)
         -> ConnectionOptionWrapper<GrpcService, HttpService>
@@ -17,30 +20,33 @@ class Connection<GrpcService: ConnectionProtocol, HttpService: ConnectionProtoco
         transportProtocolOption: TransportProtocol.Option,
         targetQueue: DispatchQueue?
     ) {
-        self.transportProtocolOption = transportProtocolOption
         self.connectionOptionWrapperFactory = connectionOptionWrapperFactory
         let connectionOptionWrapper = connectionOptionWrapperFactory(transportProtocolOption)
-        let inner = Inner(connectionOptionWrapper: connectionOptionWrapper)
-        self.inner = .init(inner, targetQueue: targetQueue)
+        let inner = Inner(
+            connectionOptionWrapper: connectionOptionWrapper,
+            transportProtocolOption: transportProtocolOption)
+        self.inner = .init(inner)
     }
 
     func rotateConnection() {
-        let connectionOptionWrapper = connectionOptionWrapperFactory(self.transportProtocolOption)
-        inner.accessAsync { $0.connectionOptionWrapper = connectionOptionWrapper }
+        let factory = connectionOptionWrapperFactory
+        inner.writeSync { $0.connectionOptionWrapper = factory($0.transportProtocolOption) }
     }
 
     func setTransportProtocolOption(_ transportProtocolOption: TransportProtocol.Option) {
-        self.transportProtocolOption = transportProtocolOption
-        let connectionOptionWrapper = connectionOptionWrapperFactory(transportProtocolOption)
-        inner.accessAsync { $0.connectionOptionWrapper = connectionOptionWrapper }
+        let factory = connectionOptionWrapperFactory
+        inner.writeSync {
+            $0.transportProtocolOption = transportProtocolOption
+            $0.connectionOptionWrapper = factory(transportProtocolOption)
+        }
     }
 
     func setAuthorization(credentials: BasicCredentials) {
-        inner.accessAsync { $0.setAuthorization(credentials: credentials) }
+        inner.writeSync { $0.setAuthorization(credentials: credentials) }
     }
 
     var connectionOptionWrapper: ConnectionOptionWrapper<GrpcService, HttpService> {
-        inner.accessWithoutLocking.connectionOptionWrapper
+        inner.readSync { $0.connectionOptionWrapper }
     }
 
     func rotateURLOnError<T>(
@@ -75,10 +81,16 @@ extension Connection {
             }
         }
 
+        var transportProtocolOption: TransportProtocol.Option
+
         private var authorizationCredentials: BasicCredentials?
 
-        init(connectionOptionWrapper: ConnectionOptionWrapper<GrpcService, HttpService>) {
+        init(
+            connectionOptionWrapper: ConnectionOptionWrapper<GrpcService, HttpService>,
+            transportProtocolOption: TransportProtocol.Option
+        ) {
             self.connectionOptionWrapper = connectionOptionWrapper
+            self.transportProtocolOption = transportProtocolOption
         }
 
         mutating func setAuthorization(credentials: BasicCredentials) {
